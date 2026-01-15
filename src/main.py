@@ -37,6 +37,7 @@ def main():
     parser.add_argument("--out", default="./library", help="Output directory root")
     parser.add_argument("--interactive", action="store_true", help="Enable interactive mode")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("--fast-copy", action="store_true", help="Use stream copying for near-instant M4B conversion (can be non-standard)")
     
     args = parser.parse_args()
     
@@ -229,7 +230,7 @@ def main():
                             book_metadata = metadata.extract_metadata_dict(details, formats_status)
                             
                             current_fname = mp3_fname
-                            if audio_utils.convert_to_m4b(target_path, m4b_path, markers, book_metadata):
+                            if audio_utils.convert_to_m4b(target_path, m4b_path, markers, book_metadata, use_copy=args.fast_copy):
                                 # Remove original mp3 and update status
                                 if os.path.exists(target_path):
                                     os.remove(target_path)

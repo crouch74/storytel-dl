@@ -3,7 +3,7 @@ import subprocess
 import logging
 from typing import Any, Dict, List
 
-def convert_to_m4b(input_path: str, output_path: str, markers: List[Dict[str, Any]], metadata: Dict[str, Any]) -> bool:
+def convert_to_m4b(input_path: str, output_path: str, markers: List[Dict[str, Any]], metadata: Dict[str, Any], use_copy: bool = False) -> bool:
     """
     Converts an audio file to M4B and embeds chapter markers using ffmpeg.
     
@@ -60,13 +60,14 @@ def convert_to_m4b(input_path: str, output_path: str, markers: List[Dict[str, An
 
         # ffmpeg command
         # -i input -i metadata -map_metadata 1 -c:a aac -b:a 64k (standard for audiobooks) output
+        audio_codec = ["-c:a", "copy"] if use_copy else ["-c:a", "aac", "-b:a", "64k"]
+        
         cmd = [
             "ffmpeg", "-y",
             "-i", input_path,
             "-i", metadata_file,
             "-map_metadata", "1",
-            "-c:a", "aac",
-            "-b:a", "64k",
+            *audio_codec,
             "-f", "mp4", # M4B is technically MP4
             output_path
         ]
