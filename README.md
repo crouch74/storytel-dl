@@ -5,8 +5,12 @@ A CLI tool for downloading audiobooks and ebooks from Storytel, organizing them 
 ## ✨ Features
 
 - 🎧 **Audiobook Download**: Downloads audiobooks and converts them to M4B with chapters.
+- ⚡ **Fast Conversion**: Near-instant M4B conversion using `--fast-copy` (stream copy).
 - 📚 **Ebook Download**: Downloads ebooks as EPUB files.
+- 🖼️ **Cover Art**: Automatically downloads the book cover as `cover.jpg`.
 - 📁 **Organized Structure**: Saves files using book titles in `<Author>/<Title>/` structure.
+- ⏭️ **Smart Skip**: Automatically skips already downloaded files (m4b/epub/jpg).
+- 🔄 **Auto-Resume**: Automatically converts existing MP3 downloads to M4B if the M4B is missing.
 - 📘 **Metadata Generation**: Creates `metadata.json` compatible with Audiobookshelf.
 - 🔐 **Secure Auth**: Encrypts passwords for API calls and stores credentials securely in `.env`.
 - 📊 **Progress Tracking**: Uses `tqdm` for overall and per-file progress bars.
@@ -58,6 +62,7 @@ Options:
   --mode {audio,ebook,both}  Download mode (default: both)
   --input PATH               Path to text file with Storytel URLs (default: ../audiobook_urls.txt)
   --out PATH                 Library output root (default: ./library)
+  --fast-copy                Use stream copying for near-instant M4B conversion
   --debug                    Enable debug level logging
   --help                     Show this help message
 ```
@@ -77,6 +82,7 @@ library/
       └── Book Title/
           ├── Book Title.m4b (with chapters)
           ├── Book Title.epub
+          ├── cover.jpg
           └── metadata.json
 ```
 
@@ -93,7 +99,10 @@ The tool uses structured logging with timestamps and emojis:
 - 📘 Metadata/Processing
 - 🎧 Audio
 - 📚 Ebook
+- 🖼️ Cover
 - 📥 Download
+- ⏭️ Skip/Resume
+- ⚙️ Processing/Conversion
 - ✅ Success
 - ⚠️ Warning
 - ❌ Error
