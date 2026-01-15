@@ -20,6 +20,10 @@ def generate_metadata_json(
            ]
     """
     
+def extract_metadata_dict(book_details: Dict[str, Any], formats_status: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Common extraction logic for metadata.
+    """
     # Extract fields with safe fallbacks
     title = book_details.get("title")
     
@@ -28,7 +32,6 @@ def generate_metadata_json(
     if "authors" in book_details and isinstance(book_details["authors"], list):
         authors = [a.get("name") for a in book_details["authors"] if a.get("name")]
     elif "author" in book_details and isinstance(book_details["author"], dict):
-         # Sometimes API might structure differently, being defensive
          authors = [book_details["author"].get("name")]
     
     author_str = ", ".join(filter(None, authors)) if authors else "Unknown Author"
@@ -42,7 +45,6 @@ def generate_metadata_json(
     # Series
     series_name = None
     if "series" in book_details and book_details["series"]:
-        # Handle both object or list of objects if API varies, assuming object from standard patterns
         series_obj = book_details["series"]
         if isinstance(series_obj, dict):
             series_name = series_obj.get("name")
@@ -51,8 +53,6 @@ def generate_metadata_json(
 
     # Publishing info
     published_year = None
-    # 'releaseDate' or 'publishDate' is common; TS code didn't use it but we need it.
-    # Looking at typical storytel responses, 'releaseDate' is often like "2023-01-01"
     release_date = book_details.get("releaseDate") or book_details.get("originalReleaseDate")
     if release_date and len(str(release_date)) >= 4:
         try:
@@ -61,12 +61,11 @@ def generate_metadata_json(
             pass
             
     # Description
-    description = book_details.get("description") # Often HTML, but JSON keeps it as string
+    description = book_details.get("description")
 
     # Genres (Category)
     genres = []
     if "category" in book_details and isinstance(book_details["category"], dict):
-        # Single category?
         cat_name = book_details["category"].get("name")
         if cat_name:
             genres.append(cat_name)
@@ -74,12 +73,12 @@ def generate_metadata_json(
          genres = [c.get("name") for c in book_details["categories"] if c.get("name")]
 
     # Language
-    language = book_details.get("language") # 'sv', 'en' etc.
+    language = book_details.get("language")
 
     # Provider ID
     provider_id = str(book_details.get("id", ""))
     
-    metadata = {
+    return {
         "title": title,
         "author": author_str,
         "narrator": narrator_str,
@@ -92,6 +91,16 @@ def generate_metadata_json(
         "providerId": provider_id,
         "formats": formats_status
     }
+
+def generate_metadata_json(
+    book_details: Dict[str, Any],
+    book_dir: str,
+    formats_status: List[Dict[str, Any]]
+) -> None:
+    """
+    Generates and saves a metadata.json file in the book directory.
+    """
+    metadata = extract_metadata_dict(book_details, formats_status)
     
     metadata_path = os.path.join(book_dir, "metadata.json")
     try:

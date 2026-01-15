@@ -1,0 +1,91 @@
+import os
+import subprocess
+import logging
+from typing import Any, Dict, List
+
+def convert_to_m4b(input_path: str, output_path: str, markers: List[Dict[str, Any]], metadata: Dict[str, Any]) -> bool:
+    """
+    Converts an audio file to M4B and embeds chapter markers using ffmpeg.
+    
+    :param input_path: Path to the source MP3 file
+    :param output_path: Path to the target M4B file
+    :param markers: List of marker dictionaries with 'title' and 'startTime' (ms)
+    :param metadata: Dictionary of book metadata for embedding
+    :return: True if successful, False otherwise
+    """
+    if not os.path.exists(input_path):
+        logging.error(f"❌ Input file not found for conversion: {input_path}")
+        return False
+
+    # Create FFMETADATA file
+    metadata_file = f"{input_path}.metadata"
+    try:
+        with open(metadata_file, "w", encoding="utf-8") as f:
+            f.write(";FFMETADATA1\n")
+            f.write(f"title={metadata.get('title', '')}\n")
+            f.write(f"artist={metadata.get('author', '')}\n")
+            f.write(f"album={metadata.get('title', '')}\n")
+            f.write(f"genre={', '.join(metadata.get('genres', []))}\n")
+            f.write(f"description={metadata.get('description', '')}\n")
+            
+            # Add chapters
+            if markers:
+                # Sort markers by startTime
+                sorted_markers = sorted(markers, key=lambda x: x.get('startTime', 0))
+                
+                for i in range(len(sorted_markers)):
+                    m = sorted_markers[i]
+                    start = m.get('startTime', 0) # in ms
+                    title = m.get('title', f"Chapter {i+1}")
+                    
+                    # End time is either next marker or unknown
+                    # ffmpeg metadata uses 'TIMEBASE=1/1000' for ms
+                    f.write("\n[CHAPTER]\n")
+                    f.write("TIMEBASE=1/1000\n")
+                    f.write(f"START={start}\n")
+                    
+                    if i + 1 < len(sorted_markers):
+                        end = sorted_markers[i+1].get('startTime', start)
+                        f.write(f"END={end}\n")
+                    else:
+                        # For the last chapter, let ffmpeg handle it or set a very large number
+                        # Better to not specify END if possible, but FFMETADATA requires it.
+                        # We don't easily know the total duration here without ffprobe.
+                        # Using 0 for END on the last chapter might work or we can probe.
+                        # Most players handle missing END or large END.
+                        # Let's try to get duration via ffprobe if possible, or just use a very large value.
+                        f.write(f"END={start + 10000000}\n") # fallback high value
+                    
+                    f.write(f"title={title}\n")
+
+        # ffmpeg command
+        # -i input -i metadata -map_metadata 1 -c:a aac -b:a 64k (standard for audiobooks) output
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", input_path,
+            "-i", metadata_file,
+            "-map_metadata", "1",
+            "-c:a", "aac",
+            "-b:a", "64k",
+            "-f", "mp4", # M4B is technically MP4
+            output_path
+        ]
+        
+        logging.info(f"⚙️ Converting {os.path.basename(input_path)} to M4B...")
+        # Run ffmpeg. We don't use text=True to avoid encoding issues with non-UTF8 output from ffmpeg
+        result = subprocess.run(cmd, capture_output=True)
+        
+        if result.returncode == 0:
+            logging.info(f"✅ Successfully converted to M4B: {os.path.basename(output_path)}")
+            return True
+        else:
+            stderr_msg = result.stderr.decode('utf-8', errors='replace')
+            logging.error(f"❌ ffmpeg failed: {stderr_msg}")
+            return False
+            
+    except Exception as e:
+        logging.error(f"❌ Error during M4B conversion: {e}")
+        return False
+    finally:
+        if os.path.exists(metadata_file):
+            os.remove(metadata_file)

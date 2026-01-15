@@ -1,0 +1,35 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Storytel: Interactive Mode",
+            "type": "python",
+            "request": "launch",
+            "module": "src.main",
+            "args": [
+                "--interactive"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Storytel: Batch Download (Default URL file)",
+            "type": "python",
+            "request": "launch",
+            "module": "src.main",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Storytel: Batch Download (Debug Log)",
+            "type": "python",
+            "request": "launch",
+            "module": "src.main",
+            "args": [
+                "--debug"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}

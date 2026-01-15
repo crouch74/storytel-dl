@@ -1,7 +1,7 @@
 import logging
 import requests
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from tqdm import tqdm
 import os
 
@@ -40,6 +40,7 @@ def login(username: str, encrypted_password: str) -> str:
     
     try:
         response = requests.post(login_url, headers=headers, data=data)
+        logging.debug(f"RAW LOGIN RESPONSE: {response.text}")
         response.raise_for_status()
         
         user_data = response.json()
@@ -71,6 +72,7 @@ def get_book_details(book_id: str, jwt: str) -> Dict[str, Any]:
             logging.warning(f"⚠️ Book not found: {book_id}")
             return None
         
+        logging.debug(f"RAW BOOK DETAILS RESPONSE: {response.text}")
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
@@ -135,6 +137,52 @@ def download_audiobook(book_id: str, jwt: str, target_path: str):
     except Exception as e:
         logging.error(f"❌ Failed to download audiobook for {book_id}: {e}")
         raise
+
+def get_audiobook_markers(book_id: str, jwt: str) -> List[Dict[str, Any]]:
+    """
+    Fetches chapter markers for the audiobook using the playback-metadata endpoint.
+    """
+    url = f"https://api.storytel.net/playback-metadata/consumable/{book_id}"
+    headers = get_common_headers(jwt)
+    
+    logging.debug(f"📑 Fetching markers for ID: {book_id}")
+    
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 404:
+            logging.warning(f"⚠️ Markers not found for book: {book_id}")
+            return []
+            
+        logging.debug(f"RAW MARKERS RESPONSE: {response.text}")
+        response.raise_for_status()
+        data = response.json()
+        
+        # Find abook format
+        formats = data.get("formats", [])
+        abook_format = next((f for f in formats if f.get("type") == "abook"), None)
+        
+        if not abook_format:
+            logging.warning(f"⚠️ No 'abook' format found in playback metadata for: {book_id}")
+            return []
+            
+        chapters = abook_format.get("chapters", [])
+        markers = []
+        current_time_ms = 0
+        
+        for chapter in chapters:
+            markers.append({
+                "title": chapter.get("title", f"Chapter {chapter.get('number', '')}"),
+                "startTime": current_time_ms
+            })
+            # Add duration of current chapter to find next chapter's start time
+            # The sample response shows durationInMilliseconds
+            duration = chapter.get("durationInMilliseconds", 0)
+            current_time_ms += duration
+            
+        return markers
+    except Exception as e:
+        logging.error(f"❌ Failed to get markers for {book_id}: {e}")
+        return []
 
 def download_ebook(book_id: str, jwt: str, target_path: str):
     """

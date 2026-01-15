@@ -14,3 +14,4 @@ ENV/
 library/
 *.part
 downloads/
+.urls

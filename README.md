@@ -4,22 +4,29 @@ A CLI tool for downloading audiobooks and ebooks from Storytel, organizing them 
 
 ## ✨ Features
 
-- 🎧 **Audiobook Download**: Downloads audiobooks as MP3 files.
+- 🎧 **Audiobook Download**: Downloads audiobooks and converts them to M4B with chapters.
 - 📚 **Ebook Download**: Downloads ebooks as EPUB files.
-- 📁 **Organized Structure**: Saves files in `<Author>/<Title>/` structure.
+- 📁 **Organized Structure**: Saves files using book titles in `<Author>/<Title>/` structure.
 - 📘 **Metadata Generation**: Creates `metadata.json` compatible with Audiobookshelf.
 - 🔐 **Secure Auth**: Encrypts passwords for API calls and stores credentials securely in `.env`.
 - 📊 **Progress Tracking**: Uses `tqdm` for overall and per-file progress bars.
 - 🛠️ **Interactive Mode**: Guided setup for first-time users.
+- 🐞 **Debugger Support**: Pre-configured VS Code launch profiles.
+- 🐳 **Docker Support**: Runs in a container with all dependencies included.
 
 ## 🚀 Getting Started
 
-### Prerequisites
+### 🐳 Docker (Recommended)
 
-- Python 3.8+
-- Active Storytel account
+The easiest way to run the tool without Worrying about dependencies (like `ffmpeg`) is using Docker:
 
-### Installation
+1. **Run the setup script**:
+   ```bash
+   chmod +x run.sh
+   ./run.sh --interactive
+   ```
+
+### 🐍 Local Installation (Manual)
 
 1. **Clone the repository** (or navigate to the project directory).
 2. **Run the setup script**:
@@ -68,8 +75,8 @@ The tool organizes your library automatically:
 library/
   └── Author/
       └── Book Title/
-          ├── audio.mp3
-          ├── ebook.epub
+          ├── Book Title.m4b (with chapters)
+          ├── Book Title.epub
           └── metadata.json
 ```
 
