@@ -239,3 +239,21 @@ def download_ebook(book_id: str, jwt: str, target_path: str):
     except Exception as e:
         logging.error(f"❌ Failed to download ebook for {book_id}: {e}")
         raise
+
+def download_cover(url: str, target_path: str):
+    """
+    Downloads the cover image from a given URL.
+    """
+    headers = {
+        "User-Agent": USER_AGENT
+    }
+    logging.debug(f"🖼️ Downloading cover from: {url}")
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        with open(target_path, 'wb') as f:
+            f.write(response.content)
+        logging.info(f"🖼️ Cover image saved: {os.path.basename(target_path)}")
+    except Exception as e:
+        logging.error(f"❌ Failed to download cover image: {e}")
+        raise

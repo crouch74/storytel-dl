@@ -257,6 +257,19 @@ def main():
                 
                 formats_status.append(status_entry)
             
+            # --- Cover Image Download ---
+            cover_data = details.get("cover", {})
+            cover_url = cover_data.get("url")
+            if cover_url:
+                cover_path = os.path.join(book_dir, "cover.jpg")
+                if os.path.exists(cover_path):
+                    logging.info(f"⏭️ Skipping cover download for {book_id}: cover.jpg already exists")
+                else:
+                    try:
+                        storytel_api.download_cover(cover_url, cover_path)
+                    except Exception as e:
+                        logging.error(f"❌ Failed to download cover for {book_id}: {e}")
+
             # Generate Metadata
             metadata.generate_metadata_json(details, book_dir, formats_status)
             
