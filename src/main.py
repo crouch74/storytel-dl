@@ -210,35 +210,45 @@ def main():
                 
                 try:
                     if ftype == "abook":
-                        fname = f"{safe_title}.mp3" 
-                        # TS downloads as mp3.
-                        # Usually audiobooks are m4b or mp3.
-                        # I'll stick to mp3 as per TS, or check headers?
-                        # TS: `const audiobookPath = path.join(downloadsDir, `${title}.mp3`);`
-                        target_path = os.path.join(book_dir, fname)
-                        storytel_api.download_audiobook(book_id, jwt, target_path)
-                        
-                        # Convert to M4B if we have markers or just for better format
+                        mp3_fname = f"{safe_title}.mp3" 
                         m4b_fname = f"{safe_title}.m4b"
+                        target_path = os.path.join(book_dir, mp3_fname)
                         m4b_path = os.path.join(book_dir, m4b_fname)
                         
-                        # Prepar metadata for audio_utils
-                        book_metadata = metadata.extract_metadata_dict(details, formats_status)
-                        
-                        if audio_utils.convert_to_m4b(target_path, m4b_path, markers, book_metadata):
-                            # Remove original mp3 and update status
-                            os.remove(target_path)
-                            fname = m4b_fname
+                        if os.path.exists(m4b_path):
+                            logging.info(f"⏭️ Skipping audio download for {book_id}: {m4b_fname} already exists")
+                            status_entry["downloaded"] = True
+                            status_entry["filename"] = m4b_fname
+                        else:
+                            if os.path.exists(target_path):
+                                logging.info(f"⏭️ Skipping audio download for {book_id}: {mp3_fname} already exists, proceeding to conversion")
+                            else:
+                                storytel_api.download_audiobook(book_id, jwt, target_path)
                             
-                        status_entry["downloaded"] = True
-                        status_entry["filename"] = fname
+                            # Convert to M4B if we have markers or just for better format
+                            book_metadata = metadata.extract_metadata_dict(details, formats_status)
+                            
+                            current_fname = mp3_fname
+                            if audio_utils.convert_to_m4b(target_path, m4b_path, markers, book_metadata):
+                                # Remove original mp3 and update status
+                                if os.path.exists(target_path):
+                                    os.remove(target_path)
+                                current_fname = m4b_fname
+                                
+                            status_entry["downloaded"] = True
+                            status_entry["filename"] = current_fname
                         
                     elif ftype == "ebook":
                         fname = f"{safe_title}.epub"
                         target_path = os.path.join(book_dir, fname)
-                        storytel_api.download_ebook(book_id, jwt, target_path)
-                        status_entry["downloaded"] = True
-                        status_entry["filename"] = fname
+                        if os.path.exists(target_path):
+                            logging.info(f"⏭️ Skipping ebook download for {book_id}: {fname} already exists")
+                            status_entry["downloaded"] = True
+                            status_entry["filename"] = fname
+                        else:
+                            storytel_api.download_ebook(book_id, jwt, target_path)
+                            status_entry["downloaded"] = True
+                            status_entry["filename"] = fname
                         
                 except Exception as e:
                     logging.error(f"❌ Failed to download {ftype} for {book_id}: {e}")
