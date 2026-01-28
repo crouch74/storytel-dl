@@ -262,3 +262,30 @@ def download_cover(url: str, target_path: str):
     except Exception as e:
         logging.error(f"❌ Failed to download cover image: {e}")
         raise
+
+def get_dynamic_book_list(entity_id: str, entity_type: str = "AUTHOR", locale: str = "eg", cursor: str = "", size: int = 50) -> Dict[str, Any]:
+    """
+    Fetches a dynamic book list (e.g., for an author or series) using the GraphQL-like API.
+    """
+    url = "https://www.storytel.com/api/graphql/dynamicBookList"
+    params = {
+        "entityId": entity_id,
+        "entityType": entity_type,
+        "locale": locale,
+        "paginationCursor": cursor,
+        "resultSize": size
+    }
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+        "Accept": "*/*"
+    }
+    
+    logging.debug(f"🔍 Fetching {entity_type} {entity_id} books (cursor: {cursor}, locale: {locale})")
+    
+    try:
+        response = requests.get(url, params=params, headers=headers)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logging.error(f"❌ Failed to fetch dynamic book list for {entity_type} {entity_id}: {e}")
+        raise

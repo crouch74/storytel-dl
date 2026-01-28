@@ -4,6 +4,7 @@ import sys
 import getpass
 import json
 import logging
+import re
 from typing import Optional, Tuple, List, Dict, Any
 from dotenv import load_dotenv, set_key
 from tqdm import tqdm
@@ -126,31 +127,140 @@ def main():
         sys.exit(1)
         
     urls = io_utils.read_urls(args.input)
+    logging.info(f"📂 Found {len(urls)} initial URLs/IDs to process.")
+    
+    # --- Resolve author/series URLs to book IDs ---
+    resolved_books = [] # List of dicts: {"id": ..., "title": ..., "authors": ...}
+    
+    for url in urls:
+        url = url.strip()
+        if not url: continue
+        
+        entity_type = None
+        if "/authors/" in url:
+            entity_type = "AUTHOR"
+        elif "/series/" in url:
+            entity_type = "SERIES"
+            
+        if entity_type:
+            # Match ID in author/series URL
+            match = re.search(r'[-/](\d+)(?:\?|#|$)', url)
+            if match:
+                entity_id = match.group(1)
+                # Try to extract locale from URL, default to 'eg'
+                locale_match = re.search(r'locale=([a-z]{2})', url)
+                locale = locale_match.group(1) if locale_match else "eg"
+                
+                logging.info(f"🔍 Expanding {entity_type} {entity_id} (locale={locale})")
+                
+                # Define required format identifiers based on mode
+                mode_map = {
+                    "audio": ["AUDIOBOOK"],
+                    "ebook": ["EBOOK"],
+                    "both": ["AUDIOBOOK", "EBOOK"]
+                }
+                required_formats = mode_map.get(args.mode, ["AUDIOBOOK", "EBOOK"])
+                
+                cursor = ""
+                while True:
+                    try:
+                        data = storytel_api.get_dynamic_book_list(entity_id, entity_type=entity_type, locale=locale, cursor=cursor)
+                        dynamic_list = data.get("dynamicBookList", {})
+                        items = dynamic_list.get("items", [])
+                        for item in items:
+                            book_id = item.get("id")
+                            if not book_id: continue
+                            
+                            formats = item.get("formats", [])
+                            # Skip if none of the book's formats match our desired mode
+                            if not any(f in required_formats for f in formats):
+                                logging.debug(f"⏭️  Skipping {item.get('title')} (Format {formats} not in {required_formats})")
+                                continue
 
-    logging.info(f"📂 Found {len(urls)} URLs to process.")
+                            # Store enough info for selection
+                            authors = [a.get("name") for a in item.get("authors", [])]
+                            resolved_books.append({
+                                "id": book_id,
+                                "title": item.get("title", "Unknown Title"),
+                                "authors": ", ".join(authors) if authors else "Unknown",
+                                "available_formats": formats
+                            })
+                        
+                        cursor = dynamic_list.get("nextPageCursor")
+                        if not cursor:
+                            break
+                        logging.debug(f"⏭️  Fetching next page (cursor: {cursor})")
+                    except Exception as e:
+                        logging.error(f"❌ Failed to expand {entity_type} {entity_id}: {e}")
+                        break
+            else:
+                logging.warning(f"⚠️ Could not extract {entity_type} ID from URL: {url}")
+        else:
+            # Assume it's a book
+            match = re.search(r'[-/](\d+)(?:\?|#|$)', url)
+            book_id = None
+            if match:
+                book_id = match.group(1)
+            elif url.isdigit():
+                book_id = url
+            
+            if book_id:
+                # We don't have titles for direct IDs without fetching, but we can placeholder
+                resolved_books.append({"id": book_id, "title": f"Book ID: {book_id}", "authors": ""})
+            else:
+                logging.warning(f"⚠️ Skipping invalid URL/ID: {url}")
+    
+    # Unique the IDs while preserving order
+    seen = set()
+    final_books = []
+    for b in resolved_books:
+        if b["id"] not in seen:
+            final_books.append(b)
+            seen.add(b["id"])
+
+    # --- Interactive Selection ---
+    if args.interactive and len(final_books) > 1:
+        print(f"\n📚 Found {len(final_books)} books. Select which ones to download:")
+        print("   (Enter indices separated by space, or 'all', or a range like '1-5')")
+        for i, b in enumerate(final_books, 1):
+            fmts = b.get("available_formats", [])
+            fmt_str = "/".join([f.title() for f in fmts]) if fmts else "ID"
+            print(f"   [{i}] {b['title']} (by {b['authors']}) [{fmt_str}]")
+        
+        selection_str = input("\n👉 Selection [default: all]: ").strip().lower()
+        if selection_str and selection_str != 'all':
+            selected_indices = set()
+            parts = selection_str.replace(',', ' ').split()
+            for part in parts:
+                if '-' in part:
+                    try:
+                        start, end = map(int, part.split('-'))
+                        for idx in range(start, end + 1):
+                            if 1 <= idx <= len(final_books):
+                                selected_indices.add(idx - 1)
+                    except ValueError: pass
+                else:
+                    try:
+                        idx = int(part)
+                        if 1 <= idx <= len(final_books):
+                            selected_indices.add(idx - 1)
+                    except ValueError: pass
+            
+            if selected_indices:
+                final_books = [final_books[i] for i in sorted(list(selected_indices))]
+            else:
+                print("   ⚠️ Invalid selection, downloading all by default.")
+
+    book_ids = [b["id"] for b in final_books]
+    logging.info(f"📚 Total books to process: {len(book_ids)}")
     
     # Main Progress Bar
-    pbar = tqdm(urls, desc="Books", unit="book")
+    pbar = tqdm(book_ids, desc="Books", unit="book")
     
     summary_processed = 0
     summary_failed = 0
     
-    for url in pbar:
-        url = url.strip()
-        if not url:
-            continue
-            
-        # Extract ID
-        # Improved regex to find the numeric ID followed by query params, anchor, or end of string.
-        # Example: .../books/title-12345?utm=abc -> 12345
-        import re
-        match = re.search(r'[-/](\d+)(?:\?|#|$)', url)
-        
-        if not match:
-             logging.warning(f"⚠️ Skipping invalid URL: {url}")
-             continue
-             
-        book_id = match.group(1)
+    for book_id in pbar:
         pbar.set_postfix_str(f"ID: {book_id}")
         
         try:
