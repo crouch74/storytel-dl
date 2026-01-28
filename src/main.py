@@ -31,95 +31,24 @@ def save_credentials(username: str, password: str):
     set_key(ENV_FILE, "STORYTEL_PASSWORD", password)
     logging.info("🔐 Collected credentials interactively and saved to .env")
 
-def fix_chapters_in_folder(root_dir: str, jwt: str):
+def fix_chapters_in_folder(root_dir: str):
     """
-    Recursively scans for metadata.json files and updates chapter markers in audio files.
+    Recursively scans for audio files and fixes markers locally using ffmpeg.
+    No API calls required.
     """
-    logging.info(f"🛠️  Fixing chapters in folder: {root_dir}")
+    logging.info(f"🛠️  Repairing markers in {root_dir}")
     
-    found_any = False
+    count = 0
     for root, dirs, files in os.walk(root_dir):
-        if "metadata.json" in files:
-            found_any = True
-            metadata_path = os.path.join(root, "metadata.json")
-            try:
-                with open(metadata_path, 'r', encoding='utf-8') as f:
-                    book_meta = json.load(f)
-                
-                book_id = book_meta.get("providerId")
-                if not book_id:
-                    continue
-                
-                logging.info(f"🔎 Found book: {book_meta.get('title')} (ID: {book_id})")
-                
-                # Fetch fresh markers from API
-                markers = storytel_api.get_audiobook_markers(book_id, jwt)
-                if not markers:
-                    logging.warning(f"⚠️ No markers found for {book_id}, skipping.")
-                    continue
-                
-                # Get fresh details for metadata embedding
-                details = storytel_api.get_book_details(book_id, jwt)
-                if not details:
-                     logging.warning(f"⚠️ Could not fetch details for {book_id}, skipping.")
-                     continue
-
-                # Find M4B or MP3 file
-                audio_file = None
-                for f_name in files:
-                    if f_name.endswith(".m4b"):
-                        audio_file = f_name
-                        break
-                
-                if not audio_file:
-                    for f_name in files:
-                        if f_name.endswith(".mp3"):
-                            audio_file = f_name
-                            break
-                
-                if not audio_file:
-                    logging.warning(f"⚠️ No audio file found in {root}, skipping.")
-                    continue
-                
-                input_path = os.path.join(root, audio_file)
-                temp_output = input_path + ".fixed.m4b"
-                final_output = os.path.join(root, os.path.splitext(audio_file)[0] + ".m4b")
-                
-                # Use metadata.py helper to get the cleaned dict for ffmpeg
-                formats_status = book_meta.get("formats", [])
-                ffmpeg_metadata = metadata.extract_metadata_dict(details, formats_status)
-                
-                if audio_utils.convert_to_m4b(input_path, temp_output, markers, ffmpeg_metadata):
-                    # Replace old file
-                    if os.path.exists(temp_output):
-                        # If we are changing format mp3 -> m4b, delete the mp3
-                        if input_path.endswith(".mp3"):
-                            os.remove(input_path)
-                        elif input_path != final_output:
-                            # This shouldn't happen unless extension changed unexpectedly
-                            if os.path.exists(final_output):
-                                os.remove(final_output)
-                        
-                        # Move temp to final
-                        if os.path.exists(final_output):
-                             os.remove(final_output)
-                        os.rename(temp_output, final_output)
-                        
-                        # Update metadata.json with the new filename if it changed
-                        book_meta["formats"] = formats_status
-                        for fmt in book_meta["formats"]:
-                            if fmt.get("type") == "abook":
-                                fmt["filename"] = os.path.basename(final_output)
-                                fmt["downloaded"] = True
-                        
-                        metadata.generate_metadata_json(details, root, book_meta["formats"])
-                        logging.info(f"✅ Fixed chapters for: {os.path.basename(final_output)}")
-                    
-            except Exception as e:
-                logging.error(f"❌ Failed to fix chapters in {root}: {e}")
-
-    if not found_any:
-        logging.warning(f"⚠️ No books (metadata.json) found in {root_dir}")
+        for f_name in files:
+            if f_name.endswith((".m4b", ".mp4", ".m4a")):
+                path = os.path.join(root, f_name)
+                logging.info(f"⚙️ Checking chapters in: {f_name}")
+                if audio_utils.fix_markers_locally(path):
+                    logging.info(f"✅ Repaired locally: {f_name}")
+                    count += 1
+    
+    logging.info(f"✨ Done. Locally repaired {count} files.")
 
 def main():
     parser = argparse.ArgumentParser(description="Storytel Downloader CLI")
@@ -175,6 +104,11 @@ def main():
 
     encrypted_password = crypto_utils.encrypt_password(password)
     
+    # --- Mode handling ---
+    if args.mode == "fix-chapters":
+        fix_chapters_in_folder(args.out)
+        return
+
     # --- Login ---
     try:
         jwt = storytel_api.login(username, encrypted_password)
@@ -183,19 +117,15 @@ def main():
         sys.exit(1)
         
     # --- Process URLs ---
+    if args.mode == "fix-chapters":
+        fix_chapters_in_folder(args.out, jwt)
+        return
+
     if not os.path.exists(args.input):
-        # If default input doesn't exist and we are not interactive, failing is bad? 
-        # But if user provided a path that doesn't exist, we must fail or warn.
-        # "If --interactive ... prompt user ... input file path (default ...)"
-        # If we are here, we have the path.
         logging.error(f"❌ Input file not found: {args.input}")
         sys.exit(1)
         
     urls = io_utils.read_urls(args.input)
-    
-    if args.mode == "fix-chapters":
-        fix_chapters_in_folder(args.out, jwt)
-        return
 
     logging.info(f"📂 Found {len(urls)} URLs to process.")
     

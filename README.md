@@ -59,13 +59,26 @@ python -m src.main --interactive
 python -m src.main [OPTIONS]
 
 Options:
-  --mode {audio,ebook,both}  Download mode (default: both)
-  --input PATH               Path to text file with Storytel URLs (default: ../audiobook_urls.txt)
-  --out PATH                 Library output root (default: ./library)
-  --fast-copy                Use stream copying for near-instant M4B conversion
-  --debug                    Enable debug level logging
-  --help                     Show this help message
+  --mode {audio,ebook,both,fix-chapters}  Download mode (default: both)
+  --input PATH                            Path to text file with Storytel URLs (default: ../audiobook_urls.txt)
+  --out PATH                              Library output root (default: ./library)
+  --debug                                 Enable debug level logging
+  --help                                  Show this help message
 ```
+
+### 🛠️ Repairing Existing Downloads
+
+If you have books that were downloaded with missing chapter titles (e.g., "Chapter None"), you can fix them using the repair mode:
+
+```bash
+python -m src.main --mode fix-chapters
+```
+
+- **Fully Local**: Works without an internet connection or Storytel login.
+- **Repair Utility**: Scans your files and replaces empty or "None" chapter titles with generic "Chapter N" labels.
+- **Lossless**: Uses stream copying (metadata update only), ensuring no quality loss.
+- **Recursive**: Scans all subdirectories in your `--out` path (default: `./library`).
+- **Fast**: Processes each book in seconds.
 
 ### URL Format
 

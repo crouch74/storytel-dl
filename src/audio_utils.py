@@ -96,3 +96,85 @@ def convert_to_m4b(input_path: str, output_path: str, markers: List[Dict[str, An
     finally:
         if os.path.exists(metadata_file):
             os.remove(metadata_file)
+
+def fix_markers_locally(input_path: str) -> bool:
+    """
+    Extracts metadata from a file, fixes 'None' or empty chapter titles, and re-embeds it.
+    This is a fully local operation.
+    """
+    if not os.path.exists(input_path):
+        return False
+
+    metadata_file = f"{input_path}.meta_extract"
+    output_path = f"{input_path}.fixed_tmp.m4b"
+    
+    try:
+        # 1. Extract metadata
+        extract_cmd = ["ffmpeg", "-y", "-i", input_path, "-f", "ffmetadata", metadata_file]
+        subprocess.run(extract_cmd, capture_output=True, check=True)
+        
+        # 2. Parse and fix
+        with open(metadata_file, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+            
+        fixed_lines = []
+        chapter_count = 0
+        in_chapter = False
+        has_title = False
+        
+        for line in lines:
+            if line.strip() == "[CHAPTER]":
+                # If we were in a chapter and didn't find a title, add one before starting new chapter
+                if in_chapter and not has_title:
+                    fixed_lines.append(f"title=Chapter {chapter_count}\n")
+                
+                in_chapter = True
+                chapter_count += 1
+                has_title = False
+                fixed_lines.append(line)
+            elif in_chapter and line.startswith("title="):
+                title_val = line.split("=", 1)[1].strip()
+                if not title_val or title_val.lower() == "none":
+                    fixed_lines.append(f"title=Chapter {chapter_count}\n")
+                else:
+                    fixed_lines.append(line)
+                has_title = True
+            else:
+                fixed_lines.append(line)
+        
+        # Final check for last chapter
+        if in_chapter and not has_title:
+            fixed_lines.append(f"title=Chapter {chapter_count}\n")
+
+        with open(metadata_file, "w", encoding="utf-8") as f:
+            f.writelines(fixed_lines)
+            
+        # 3. Re-embed
+        # We use -codec copy to avoid re-encoding
+        embed_cmd = [
+            "ffmpeg", "-y",
+            "-i", input_path,
+            "-i", metadata_file,
+            "-map_metadata", "1",
+            "-codec", "copy",
+            output_path
+        ]
+        
+        res = subprocess.run(embed_cmd, capture_output=True)
+        if res.returncode == 0:
+            # Swap files
+            os.remove(input_path)
+            os.rename(output_path, input_path)
+            return True
+        else:
+            logging.error(f"❌ Failed to re-embed metadata: {res.stderr.decode(errors='replace')}")
+            return False
+            
+    except Exception as e:
+        logging.error(f"❌ Error fixing markers locally for {input_path}: {e}")
+        return False
+    finally:
+        if os.path.exists(metadata_file):
+            os.remove(metadata_file)
+        if os.path.exists(output_path):
+            os.remove(output_path)
