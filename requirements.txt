@@ -2,3 +2,5 @@ requests
 python-dotenv
 pycryptodome
 tqdm
+openai-whisper
+yt-dlp

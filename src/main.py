@@ -155,11 +155,11 @@ def main():
                 
                 # Define required format identifiers based on mode
                 mode_map = {
-                    "audio": ["AUDIOBOOK"],
+                    "audio": ["ABOOK"],
                     "ebook": ["EBOOK"],
-                    "both": ["AUDIOBOOK", "EBOOK"]
+                    "both": ["ABOOK", "EBOOK"]
                 }
-                required_formats = mode_map.get(args.mode, ["AUDIOBOOK", "EBOOK"])
+                required_formats = mode_map.get(args.mode, ["ABOOK", "EBOOK"])
                 
                 cursor = ""
                 while True:
