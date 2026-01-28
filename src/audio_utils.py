@@ -3,7 +3,7 @@ import subprocess
 import logging
 from typing import Any, Dict, List
 
-def convert_to_m4b(input_path: str, output_path: str, markers: List[Dict[str, Any]], metadata: Dict[str, Any], use_copy: bool = False) -> bool:
+def convert_to_m4b(input_path: str, output_path: str, markers: List[Dict[str, Any]], metadata: Dict[str, Any]) -> bool:
     """
     Converts an audio file to M4B and embeds chapter markers using ffmpeg.
     
@@ -22,11 +22,11 @@ def convert_to_m4b(input_path: str, output_path: str, markers: List[Dict[str, An
     try:
         with open(metadata_file, "w", encoding="utf-8") as f:
             f.write(";FFMETADATA1\n")
-            f.write(f"title={metadata.get('title', '')}\n")
-            f.write(f"artist={metadata.get('author', '')}\n")
-            f.write(f"album={metadata.get('title', '')}\n")
-            f.write(f"genre={', '.join(metadata.get('genres', []))}\n")
-            f.write(f"description={metadata.get('description', '')}\n")
+            f.write(f"title={metadata.get('title') or ''}\n")
+            f.write(f"artist={metadata.get('author') or ''}\n")
+            f.write(f"album={metadata.get('title') or ''}\n")
+            f.write(f"genre={', '.join(metadata.get('genres') or [])}\n")
+            f.write(f"description={metadata.get('description') or ''}\n")
             
             # Add chapters
             if markers:
@@ -36,7 +36,7 @@ def convert_to_m4b(input_path: str, output_path: str, markers: List[Dict[str, An
                 for i in range(len(sorted_markers)):
                     m = sorted_markers[i]
                     start = m.get('startTime', 0) # in ms
-                    title = m.get('title', f"Chapter {i+1}")
+                    title = m.get('title') or f"Chapter {i+1}"
                     
                     # End time is either next marker or unknown
                     # ffmpeg metadata uses 'TIMEBASE=1/1000' for ms
@@ -60,7 +60,13 @@ def convert_to_m4b(input_path: str, output_path: str, markers: List[Dict[str, An
 
         # ffmpeg command
         # -i input -i metadata -map_metadata 1 -c:a aac -b:a 64k (standard for audiobooks) output
-        audio_codec = ["-c:a", "copy"] if use_copy else ["-c:a", "aac", "-b:a", "64k"]
+        # If input is already m4b/mp4, we can copy the stream to save time and quality
+        is_m4b = input_path.lower().endswith(('.m4b', '.mp4', '.m4a'))
+        
+        if is_m4b:
+            audio_codec = ["-c:a", "copy"]
+        else:
+            audio_codec = ["-c:a", "aac", "-b:a", "64k"]
         
         cmd = [
             "ffmpeg", "-y",

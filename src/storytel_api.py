@@ -169,9 +169,14 @@ def get_audiobook_markers(book_id: str, jwt: str) -> List[Dict[str, Any]]:
         markers = []
         current_time_ms = 0
         
-        for chapter in chapters:
+        for i, chapter in enumerate(chapters):
+            title = chapter.get("title")
+            if not title:
+                number = chapter.get("number")
+                title = f"Chapter {number}" if number is not None else f"Chapter {i+1}"
+                
             markers.append({
-                "title": chapter.get("title", f"Chapter {chapter.get('number', '')}"),
+                "title": title,
                 "startTime": current_time_ms
             })
             # Add duration of current chapter to find next chapter's start time

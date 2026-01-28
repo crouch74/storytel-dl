@@ -2,8 +2,9 @@ import argparse
 import os
 import sys
 import getpass
+import json
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict, Any
 from dotenv import load_dotenv, set_key
 from tqdm import tqdm
 
@@ -30,14 +31,103 @@ def save_credentials(username: str, password: str):
     set_key(ENV_FILE, "STORYTEL_PASSWORD", password)
     logging.info("🔐 Collected credentials interactively and saved to .env")
 
+def fix_chapters_in_folder(root_dir: str, jwt: str):
+    """
+    Recursively scans for metadata.json files and updates chapter markers in audio files.
+    """
+    logging.info(f"🛠️  Fixing chapters in folder: {root_dir}")
+    
+    found_any = False
+    for root, dirs, files in os.walk(root_dir):
+        if "metadata.json" in files:
+            found_any = True
+            metadata_path = os.path.join(root, "metadata.json")
+            try:
+                with open(metadata_path, 'r', encoding='utf-8') as f:
+                    book_meta = json.load(f)
+                
+                book_id = book_meta.get("providerId")
+                if not book_id:
+                    continue
+                
+                logging.info(f"🔎 Found book: {book_meta.get('title')} (ID: {book_id})")
+                
+                # Fetch fresh markers from API
+                markers = storytel_api.get_audiobook_markers(book_id, jwt)
+                if not markers:
+                    logging.warning(f"⚠️ No markers found for {book_id}, skipping.")
+                    continue
+                
+                # Get fresh details for metadata embedding
+                details = storytel_api.get_book_details(book_id, jwt)
+                if not details:
+                     logging.warning(f"⚠️ Could not fetch details for {book_id}, skipping.")
+                     continue
+
+                # Find M4B or MP3 file
+                audio_file = None
+                for f_name in files:
+                    if f_name.endswith(".m4b"):
+                        audio_file = f_name
+                        break
+                
+                if not audio_file:
+                    for f_name in files:
+                        if f_name.endswith(".mp3"):
+                            audio_file = f_name
+                            break
+                
+                if not audio_file:
+                    logging.warning(f"⚠️ No audio file found in {root}, skipping.")
+                    continue
+                
+                input_path = os.path.join(root, audio_file)
+                temp_output = input_path + ".fixed.m4b"
+                final_output = os.path.join(root, os.path.splitext(audio_file)[0] + ".m4b")
+                
+                # Use metadata.py helper to get the cleaned dict for ffmpeg
+                formats_status = book_meta.get("formats", [])
+                ffmpeg_metadata = metadata.extract_metadata_dict(details, formats_status)
+                
+                if audio_utils.convert_to_m4b(input_path, temp_output, markers, ffmpeg_metadata):
+                    # Replace old file
+                    if os.path.exists(temp_output):
+                        # If we are changing format mp3 -> m4b, delete the mp3
+                        if input_path.endswith(".mp3"):
+                            os.remove(input_path)
+                        elif input_path != final_output:
+                            # This shouldn't happen unless extension changed unexpectedly
+                            if os.path.exists(final_output):
+                                os.remove(final_output)
+                        
+                        # Move temp to final
+                        if os.path.exists(final_output):
+                             os.remove(final_output)
+                        os.rename(temp_output, final_output)
+                        
+                        # Update metadata.json with the new filename if it changed
+                        book_meta["formats"] = formats_status
+                        for fmt in book_meta["formats"]:
+                            if fmt.get("type") == "abook":
+                                fmt["filename"] = os.path.basename(final_output)
+                                fmt["downloaded"] = True
+                        
+                        metadata.generate_metadata_json(details, root, book_meta["formats"])
+                        logging.info(f"✅ Fixed chapters for: {os.path.basename(final_output)}")
+                    
+            except Exception as e:
+                logging.error(f"❌ Failed to fix chapters in {root}: {e}")
+
+    if not found_any:
+        logging.warning(f"⚠️ No books (metadata.json) found in {root_dir}")
+
 def main():
     parser = argparse.ArgumentParser(description="Storytel Downloader CLI")
-    parser.add_argument("--mode", choices=["audio", "ebook", "both"], default="both", help="Download mode")
+    parser.add_argument("--mode", choices=["audio", "ebook", "both", "fix-chapters"], default="both", help="Download mode")
     parser.add_argument("--input", default=os.path.join("..", "audiobook_urls.txt"), help="Path to input file")
     parser.add_argument("--out", default="./library", help="Output directory root")
     parser.add_argument("--interactive", action="store_true", help="Enable interactive mode")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    parser.add_argument("--fast-copy", action="store_true", help="Use stream copying for near-instant M4B conversion (can be non-standard)")
     
     args = parser.parse_args()
     
@@ -60,8 +150,8 @@ def main():
         
         # Mode Selection
         print(f"   Current Mode: {args.mode}")
-        new_mode = input("   Enter mode (audio/ebook/both) [leave empty to keep]: ").strip().lower()
-        if new_mode in ["audio", "ebook", "both"]:
+        new_mode = input("   Enter mode (audio/ebook/both/fix-chapters) [leave empty to keep]: ").strip().lower()
+        if new_mode in ["audio", "ebook", "both", "fix-chapters"]:
             args.mode = new_mode
             
         # Input File
@@ -102,6 +192,11 @@ def main():
         sys.exit(1)
         
     urls = io_utils.read_urls(args.input)
+    
+    if args.mode == "fix-chapters":
+        fix_chapters_in_folder(args.out, jwt)
+        return
+
     logging.info(f"📂 Found {len(urls)} URLs to process.")
     
     # Main Progress Bar
@@ -116,19 +211,10 @@ def main():
             continue
             
         # Extract ID
-        # "If a book URL doesn’t end in digits, log ⚠️ Skipping invalid URL"
-        # The TS extraction logic: last part, match digits at end.
-        parts = url.split('/')
-        if not parts:
-            continue
-        last_part = parts[-1]
-        
-        # We need to find the ID. 
-        # Example URL: https://www.storytel.com/se/sv/books/12345
-        # or https://www.storytel.com/se/sv/books/title-12345
-        # My regex should extract the trailing digits.
+        # Improved regex to find the numeric ID followed by query params, anchor, or end of string.
+        # Example: .../books/title-12345?utm=abc -> 12345
         import re
-        match = re.search(r'(\d+)$', last_part)
+        match = re.search(r'[-/](\d+)(?:\?|#|$)', url)
         
         if not match:
              logging.warning(f"⚠️ Skipping invalid URL: {url}")
@@ -152,7 +238,7 @@ def main():
                 
             summary_processed += 1
             
-            title = details.get("title", f"book_{book_id}")
+            title = details.get("title") or f"book_{book_id}"
             
             # Determine Author for folder structure
             # Logic: <library_root>/<Author>/<Book Title>/
@@ -162,9 +248,9 @@ def main():
             author_data = details.get("authors", [])
             author_name = "Unknown Author"
             if isinstance(author_data, list) and author_data:
-                author_name = author_data[0].get("name", "Unknown Author")
+                author_name = author_data[0].get("name") or "Unknown Author"
             elif isinstance(details.get("author"), dict):
-                 author_name = details["author"].get("name", "Unknown Author")
+                 author_name = details["author"].get("name") or "Unknown Author"
                  
             # Sanitize paths
             safe_author = io_utils.sanitize_filename(author_name)
@@ -230,7 +316,7 @@ def main():
                             book_metadata = metadata.extract_metadata_dict(details, formats_status)
                             
                             current_fname = mp3_fname
-                            if audio_utils.convert_to_m4b(target_path, m4b_path, markers, book_metadata, use_copy=args.fast_copy):
+                            if audio_utils.convert_to_m4b(target_path, m4b_path, markers, book_metadata):
                                 # Remove original mp3 and update status
                                 if os.path.exists(target_path):
                                     os.remove(target_path)
