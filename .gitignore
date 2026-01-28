@@ -15,3 +15,4 @@ library/
 *.part
 downloads/
 .urls
+.tmp/
