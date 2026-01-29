@@ -99,6 +99,47 @@ def download_youtube_audio(url: str, output_dir: str = ".", cookies_from_browser
 
     is_playlist = info.get("_type") == "playlist"
     entries = info.get("entries", [info]) if is_playlist else [info]
+    
+    playlist_items_str = ""
+    if is_playlist:
+        print(f"\n📋 Playlist found: {info.get('title', 'Unknown')}")
+        print(f"Found {len(entries)} videos. Select videos to EXCLUDE.")
+        print("-" * 60)
+        for i, entry in enumerate(entries):
+            if not entry:
+                print(f"{i+1:3d}. [Deleted/Unknown]")
+                continue
+            title = entry.get('title', 'Unknown')
+            duration = entry.get('duration')
+            dur_str = f"{int(duration//60)}:{int(duration%60):02d}" if duration else "N/A"
+            print(f"{i+1:3d}. [{dur_str}] {title}")
+        print("-" * 60)
+        
+        exclude_input = input("Enter indices to SKIP (comma-separated, e.g. 1,3,5) or Enter to download all: ").strip()
+        
+        if exclude_input:
+            try:
+                excluded_indices = {int(x.strip()) for x in exclude_input.split(",") if x.strip().isdigit()}
+                kept_indices = []
+                kept_entries = []
+                
+                for i, entry in enumerate(entries):
+                    idx = i + 1
+                    if idx not in excluded_indices:
+                        kept_indices.append(str(idx))
+                        kept_entries.append(entry)
+                    else:
+                        print(f"   Skipping: {entry.get('title', 'Unknown')}")
+                
+                if not kept_indices:
+                    logger.error("❌ All videos excluded!")
+                    return None
+                    
+                playlist_items_str = ",".join(kept_indices)
+                entries = kept_entries
+                logger.info(f"✅ Filtered to {len(entries)} videos.")
+            except ValueError:
+                logger.warning("⚠️ Invalid input. Downloading all.")
     playlist_title = info.get("title", "YouTube Audio")
     uploader = info.get("uploader", info.get("uploader_id", "Unknown Author"))
     
@@ -156,8 +197,12 @@ def download_youtube_audio(url: str, output_dir: str = ".", cookies_from_browser
         "--js-runtimes", "node",
         "--remote-components", "ejs:github",
         "--extractor-args", "youtube:player_client=web,tv",
-        url
     ]
+    
+    if is_playlist and playlist_items_str:
+        cmd_dl += ["--playlist-items", playlist_items_str]
+        
+    cmd_dl.append(url)
     
     if cookies_from_browser:
         cmd_dl += ["--cookies-from-browser", cookies_from_browser]
