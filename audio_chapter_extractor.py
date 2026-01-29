@@ -7,6 +7,7 @@ import sys
 import re
 import logging
 import glob
+import uuid
 from typing import List, Dict, Any, Optional, Tuple
 
 # Set up logger
@@ -16,123 +17,302 @@ def is_url(path: str) -> bool:
     """Checks if the path is a URL"""
     return path.startswith(("http://", "https://", "www."))
 
-def download_youtube_audio(url: str, output_dir: str = ".") -> Optional[Tuple[str, List[Dict[str, Any]]]]:
-    """Downloads audio from YouTube and extracts chapters using yt-dlp"""
+def concatenate_audio_files(file_list: List[str], output_path: str) -> bool:
+    """Concatenates multiple audio files into one using ffmpeg"""
+    if not file_list:
+        return False
+    if len(file_list) == 1:
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        os.rename(file_list[0], output_path)
+        return True
+        
+    # Create a concat list file
+    list_file = f"{output_path}.list.txt"
+    try:
+        with open(list_file, "w", encoding="utf-8") as f:
+            for file_path in file_list:
+                # ffmpeg requires escaping single quotes in filenames for the concat demuxer
+                # Use absolute path for safety
+                abs_path = os.path.abspath(file_path)
+                safe_file = abs_path.replace("'", "'\\''")
+                f.write(f"file '{safe_file}'\n")
+        
+        logger.info(f"� Concatenating {len(file_list)} files into {output_path}...")
+        # First try stream copy concatenation
+        cmd = [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", list_file, "-c", "copy", output_path
+        ]
+        res = run_command(cmd)
+        
+        if res.returncode != 0:
+            logger.warning("⚠️ Stream copy concatenation failed, trying with re-encoding...")
+            # If copy fails (e.g. different parameters), try re-encoding
+            cmd = [
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                "-i", list_file, "-c:a", "libmp3lame", "-q:a", "2", output_path
+            ]
+            res = run_command(cmd)
+            
+        return res.returncode == 0
+    finally:
+        if os.path.exists(list_file):
+            os.remove(list_file)
+        # Clean up individual parts
+        for f in file_list:
+            if os.path.exists(f) and f != output_path:
+                try:
+                    os.remove(f)
+                except:
+                    pass
+
+def download_youtube_audio(url: str, output_dir: str = ".", cookies_from_browser: Optional[str] = None, cookies_file: Optional[str] = None, list_formats: bool = False) -> Optional[Tuple[str, List[Dict[str, Any]], str, str]]:
+    """Downloads audio from YouTube (single video or playlist) and extracts chapters"""
     # Sanitize URL: remove backslashes that might come from shell escaping (e.g. \?, \&)
     url = url.replace("\\?", "?").replace("\\&", "&").replace("\\=", "=")
     
     logger.info(f"📺 Downloading from YouTube: {url}")
     
-    # Try to find a working yt-dlp. Newer YouTube features require recent yt-dlp,
-    # which often requires Python 3.9+. We prioritize newer python versions.
+    # Try to find a working yt-dlp.
     yt_dlp_cmd = None
-    
-    # List of python commands to try (in order of preference)
-    # Note: We put sys.executable later because if it's Python < 3.9, 
-    # it might have an outdated yt-dlp that fails on recent YouTube changes.
-    py_versions = ["python3.11", "python3.10", "python3.9", sys.executable, "python3"]
+    py_versions = [sys.executable, "python3", "python3.11", "python3.10", "python3.9"]
     
     for py in py_versions:
-        # Check if this python can run yt-dlp and what version it is
-        check_cmd = [py, "-m", "yt_dlp", "--version"] if py != "yt-dlp" else ["yt-dlp", "--version"]
+        check_cmd = [py, "-m", "yt_dlp", "--version"]
         res = run_command(check_cmd)
         if res.returncode == 0:
-            version_str = res.stdout.strip()
-            logger.debug(f"Found yt-dlp version {version_str} using {py}")
-            # If we are on an old python (like 3.8), we might want a newer one if available
-            # but for now, we'll take the first one that works.
-            yt_dlp_cmd = [py, "-m", "yt_dlp"] if py != "yt-dlp" else ["yt-dlp"]
+            yt_dlp_cmd = [py, "-m", "yt_dlp"]
             break
     
     if not yt_dlp_cmd:
-        # Final fallback to raw 'yt-dlp' binary
         if run_command(["yt-dlp", "--version"]).returncode == 0:
             yt_dlp_cmd = ["yt-dlp"]
     
     if not yt_dlp_cmd:
         logger.error("❌ yt-dlp not found or incompatible. Please install it: pip install yt-dlp")
-        logger.error("Note: yt-dlp now requires Python 3.9 or newer for latest YouTube support.")
         return None
 
-    # We use a temporary filename template
-    template = os.path.join(output_dir, "yt_download_%(id)s.%(ext)s")
-    
-    # 1. Get metadata and chapters
-    logger.info("🎬 Extracting metadata...")
+    # 1. Get metadata and entries
+    logger.info("🎬 Extracting metadata (this may take a moment for playlists)...")
     cmd_meta = yt_dlp_cmd + [
-        "--print-json", "--skip-download", "--no-playlist", 
+        "--dump-single-json", "--skip-download",
         "--no-cache-dir",
-        "--extractor-args", "youtube:player_client=android,web",
+        "--js-runtimes", "node",
+        "--remote-components", "ejs:github",
+        "--extractor-args", "youtube:player_client=web,tv",
         url
     ]
+    
+    if cookies_from_browser:
+        cmd_meta += ["--cookies-from-browser", cookies_from_browser]
+    if cookies_file:
+        cmd_meta += ["--cookies", cookies_file]
     res_meta = run_command(cmd_meta)
     
-    chapters = []
-    title = "YouTube Audio"
-    
-    if res_meta.returncode == 0:
-        try:
-            info = json.loads(res_meta.stdout)
-            title = info.get("title", title)
-            yt_chapters = info.get("chapters") or []
-            for c in yt_chapters:
-                chapters.append({
-                    "start": float(c["start_time"]),
-                    "end": float(c["end_time"]),
-                    "title": c.get("title", f"Chapter {len(chapters) + 1}")
-                })
-            logger.debug(f"Found {len(chapters)} chapters in YouTube metadata.")
-        except json.JSONDecodeError:
-            logger.error("Failed to parse YouTube metadata.")
+    if res_meta.returncode != 0:
+        logger.error(f"❌ Failed to get YouTube metadata: {res_meta.stderr}")
+        return None
 
-    # Check if file already exists in output_dir
-    safe_title = "".join([c if c.isalnum() else "_" for c in title])
+    try:
+        info = json.loads(res_meta.stdout)
+    except json.JSONDecodeError:
+        logger.error("❌ Failed to parse YouTube metadata.")
+        if res_meta.stderr:
+            logger.debug(f"Metadata stderr: {res_meta.stderr}")
+        return None
+
+    # Handle format listing if requested or if no formats found
+    formats = info.get("formats", [])
+    selected_format = "ba/best"
+    
+    if list_formats:
+        print("\n📊 Available YouTube formats:")
+        print(f"{'ID':<5} {'EXT':<5} {'RESOLUTION':<15} {'FILESIZE':<10} {'TBR':<6} {'PROTO':<6} {'ACODEC':<15}")
+        print("-" * 75)
+        
+        # Filter for interesting formats (audio or common video)
+        for f in formats:
+            fid = str(f.get("format_id", "N/A"))
+            ext = str(f.get("ext", "N/A"))
+            res = str(f.get("resolution", "audio only"))
+            size = f.get("filesize_approx") or f.get("filesize")
+            size_str = f"{size/(1024*1024):.1f}M" if size else "N/A"
+            tbr = str(f.get("tbr", "N/A"))
+            proto = str(f.get("protocol", "N/A"))
+            acodec = str(f.get("acodec", "N/A"))
+            
+            # Highlight audio-only formats or common combined formats
+            if f.get("vcodec") == "none":
+                print(f"⭐ {fid:4} {ext:4} {res:15} {size_str:10} {tbr:<6} {proto:<6} {acodec:15}")
+            else:
+                print(f"  {fid:4} {ext:4} {res:15} {size_str:10} {tbr:<6} {proto:<6} {acodec:15}")
+        
+        choice = input("\n👉 Enter format ID to download (default: bestaudio): ").strip()
+        if choice:
+            selected_format = choice
+            logger.info(f"🎯 Selected format: {selected_format}")
+
+    is_playlist = info.get("_type") == "playlist"
+    entries = info.get("entries", [info]) if is_playlist else [info]
+    playlist_title = info.get("title", "YouTube Audio")
+    uploader = info.get("uploader", info.get("uploader_id", "Unknown Author"))
+    
+    # Generate a unique session ID using playlist/video ID + UUID
+    # This ensures concurrent downloads don't interfere with each other
+    playlist_id = info.get("id", "unknown")
+    session_uuid = str(uuid.uuid4())[:8]  # Use first 8 chars of UUID for brevity
+    session_id = f"{playlist_id}_{session_uuid}"
+    logger.debug(f"Session ID: {session_id}")
+    
+    # Check if combined file already exists in output_dir
+    safe_title = "".join([c if c.isalnum() else "_" for c in playlist_title])
     final_path = os.path.join(output_dir, f"{safe_title}.mp3")
     
     if os.path.exists(final_path):
-        logger.info(f"♻️  File already exists in {output_dir}, skipping download: {final_path}")
-        return final_path, chapters
+        logger.info(f"♻️  File already exists, skipping download: {final_path}")
+        # Recalculate chapters from info
+        all_chapters = []
+        current_offset = 0.0
+        for entry in entries:
+            if not entry: continue
+            duration = float(entry.get("duration") or 0)
+            yt_chapters = entry.get("chapters") or []
+            if not yt_chapters:
+                all_chapters.append({
+                    "start": current_offset,
+                    "end": current_offset + duration,
+                    "title": entry.get("title", f"Part {len(all_chapters) + 1}")
+                })
+            else:
+                for c in yt_chapters:
+                    all_chapters.append({
+                        "start": float(c["start_time"]) + current_offset,
+                        "end": float(c["end_time"]) + current_offset,
+                        "title": c.get("title", f"Chapter {len(all_chapters) + 1}")
+                    })
+            current_offset += duration
+        return final_path, all_chapters, playlist_title, uploader
 
-    # 2. Download audio
-    logger.info("📡 Downloading audio...")
+    # 2. Download audio with session-specific filenames
+    logger.info(f"📡 Downloading {'playlist' if is_playlist else 'audio'} ({len(entries)} items)...")
+    
+    if is_playlist:
+        # Use session ID to ensure uniqueness across concurrent downloads
+        template = os.path.join(output_dir, f"yt_part_{session_id}_%(playlist_index)03d_%(id)s.%(ext)s")
+    else:
+        template = os.path.join(output_dir, f"yt_download_{session_id}_%(id)s.%(ext)s")
+
     cmd_dl = yt_dlp_cmd + [
-        "-f", "bestaudio/best", "-x", "--audio-format", "mp3", 
+        "-f", selected_format, "-x", "--audio-format", "mp3", 
         "-o", template,
-        "--no-playlist",
         "--no-cache-dir",
         "--geo-bypass",
-        "--no-check-certificates",
-        "--prefer-free-formats",
-        "--add-header", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "--extractor-args", "youtube:player_client=android,web",
+        "--concurrent-fragments", "5",
+        "--js-runtimes", "node",
+        "--remote-components", "ejs:github",
+        "--extractor-args", "youtube:player_client=web,tv",
         url
     ]
-    res_dl = run_command(cmd_dl)
     
+    if cookies_from_browser:
+        cmd_dl += ["--cookies-from-browser", cookies_from_browser]
+    if cookies_file:
+        cmd_dl += ["--cookies", cookies_file]
+    
+    # Use capture_output=False to show the yt-dlp progress bar
+    res_dl = run_command(cmd_dl, capture_output=False)
     if res_dl.returncode != 0:
         logger.error(f"❌ yt-dlp download failed: {res_dl.stderr}")
         return None
 
-    # Find the downloaded file
-    # We look for files starting with yt_download_ and ending with .mp3
-    downloaded_files = glob.glob(os.path.join(output_dir, "yt_download_*.mp3"))
+    # 3. Process downloads and merge - use session-specific pattern
+    downloaded_files = []
+    if is_playlist:
+        # Only find files from this session
+        downloaded_files = sorted(glob.glob(os.path.join(output_dir, f"yt_part_{session_id}_*.mp3")))
+    else:
+        downloaded_files = glob.glob(os.path.join(output_dir, f"yt_download_{session_id}_*.mp3"))
+
     if not downloaded_files:
-        logger.error("❌ Could not find downloaded audio file.")
+        logger.error("❌ Could not find downloaded audio files.")
         return None
+
+    all_chapters = []
+    current_offset = 0.0
     
-    # Use the most recent one or the one matching the template logic
-    audio_path = downloaded_files[0]
+    # Process each downloaded file to build chapters
+    for i, file_path in enumerate(downloaded_files):
+        duration = get_audio_duration(file_path)
+        entry = entries[i] if (is_playlist and i < len(entries)) else info
+        yt_chapters = entry.get("chapters") or []
+        
+        if not yt_chapters:
+            all_chapters.append({
+                "start": current_offset,
+                "end": current_offset + duration,
+                "title": entry.get("title", f"Part {i+1}")
+            })
+        else:
+            for c in yt_chapters:
+                all_chapters.append({
+                    "start": float(c["start_time"]) + current_offset,
+                    "end": float(c["end_time"]) + current_offset,
+                    "title": c.get("title", f"Chapter {len(all_chapters) + 1}")
+                })
+        
+        current_offset += duration
+
+    # Merge files
+    if concatenate_audio_files(downloaded_files, final_path):
+        logger.info(f"✅ Successfully combined and saved as: {final_path}")
+        
+        # Clean up chapter titles by removing common prefixes (useful for playlists)
+        if is_playlist and len(all_chapters) > 1:
+            all_chapters = clean_chapter_titles(all_chapters)
+            
+        return final_path, all_chapters, playlist_title, uploader
+    else:
+        logger.error("❌ Failed to concatenate audio files.")
+        return (downloaded_files[0] if downloaded_files else None), all_chapters, playlist_title, uploader
+
+def clean_chapter_titles(chapters: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Removes common prefixes from chapter titles"""
+    if not chapters or len(chapters) < 2:
+        return chapters
+        
+    titles = [c['title'] for c in chapters]
     
-    try:
-        # final_path already calculated above
-        if os.path.exists(final_path):
-            os.remove(final_path)
-        os.rename(audio_path, final_path)
-        logger.info(f"✅ Downloaded and saved as: {final_path}")
-        return final_path, chapters
-    except Exception as e:
-        logger.error(f"Error renaming file: {e}")
-        return audio_path, chapters
+    # Find longest common prefix
+    prefix = os.path.commonprefix(titles)
+    
+    if prefix:
+        # If the prefix doesn't end with a space or separator, it might be 
+        # cutting into a word. Let's try to back up to the last separator.
+        # Separators: | , - , : , / , space
+        last_sep = -1
+        for sep in [" | ", " - ", ": ", " / ", " – "]:
+            idx = prefix.rfind(sep)
+            if idx > last_sep:
+                last_sep = idx + len(sep)
+        
+        # If no fancy separator, check for a simple space
+        if last_sep == -1:
+            idx = prefix.rfind(" ")
+            if idx != -1:
+                last_sep = idx + 1
+        
+        if last_sep != -1:
+            prefix = prefix[:last_sep]
+            
+        if len(prefix) > 3: # Only strip if it's a substantial prefix
+            logger.info(f"🧹 Removing common prefix from chapters: '{prefix}'")
+            for c in chapters:
+                if c['title'].startswith(prefix):
+                    c['title'] = c['title'][len(prefix):].strip()
+                    
+    return chapters
+
 
 def run_command(cmd: List[str], capture_output=True, text=True) -> subprocess.CompletedProcess:
     """Wrapper for subprocess.run"""
@@ -530,8 +710,13 @@ def main():
     parser.add_argument("--language", help="Audio language code (e.g., 'en', 'ar'). Auto-detected if not specified.")
     parser.add_argument("--min-chapter-len", type=float, default=20.0, help="Minimum chapter length in seconds (default: 20.0)")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("--cookies-from-browser", help="Browser to extract cookies from (e.g., 'chrome', 'firefox', 'safari')")
+    parser.add_argument("--cookies", help="Path to a cookies.txt file")
     
     args = parser.parse_args()
+    
+    # Use list-formats by default unless no-interactive is set
+    args.list_formats = True
     
     # Configure logging
     log_level = logging.DEBUG if args.debug else logging.INFO
@@ -548,10 +733,10 @@ def main():
     if is_url(args.input):
         tmp_dir = ".tmp"
         os.makedirs(tmp_dir, exist_ok=True)
-        result = download_youtube_audio(args.input, output_dir=tmp_dir)
+        result = download_youtube_audio(args.input, output_dir=tmp_dir, cookies_from_browser=args.cookies_from_browser, cookies_file=args.cookies, list_formats=args.list_formats)
         if not result:
             sys.exit(1)
-        args.input, chapters = result
+        args.input, chapters, yt_title, yt_author = result
         if chapters:
             logger.info(f"⭐ Found {len(chapters)} chapters on YouTube.")
             use_yt_chapters = input("Use these YouTube chapters? [Y/n]: ").strip().lower() != 'n'
@@ -560,10 +745,8 @@ def main():
 
         # Ask for author and title for YouTube sources
         print("\n📝 Please provide metadata for the YouTube source:")
-        # Use filename as default title suggestion
-        default_title = os.path.splitext(os.path.basename(args.input))[0].replace("_", " ")
-        author = input(f"Enter Author Name [Unknown Author]: ").strip() or "Unknown Author"
-        title = input(f"Enter Book Title [{default_title}]: ").strip() or default_title
+        author = input(f"Enter Author Name [{yt_author}]: ").strip() or yt_author
+        title = input(f"Enter Book Title [{yt_title}]: ").strip() or yt_title
         
         # Enforce the requested path structure: author/title/title.m4b
         # Sanitize for path usage
