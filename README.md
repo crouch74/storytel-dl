@@ -119,3 +119,47 @@ The tool uses structured logging with timestamps and emojis:
 - ✅ Success
 - ⚠️ Warning
 - ❌ Error
+## 🎥 YouTube & Local Audio Tool
+
+A versatile tool to turn YouTube videos/playlists or local MP3 files into chapterized M4B audiobooks.
+
+### Features
+- 📺 **YouTube Support**: Downloads videos or playlists directly.
+- 🎬 **Chapter Detection**:
+  - Uses **YouTube Chapters** if available.
+  - **Whisper Transcription**: AI-powered chapter detection (`--transcription`).
+  - **Silence Detection**: Finds breaks between chapters (`--silence-db`).
+  - **FFprobe Metadata**: Extracts chapters from existing files.
+- 📦 **M4B Creation**: Merges files and adds chapter metadata.
+- 🧹 **Cleanup**: Filters short chapters (`--min-chapter-len`) and cleans titles.
+- 🍪 **Cookies**: Supports `--cookies-from-browser` to download restricted/premium content.
+
+### Usage
+
+```bash
+# Basic usage with a YouTube link
+python3 generate_audiobook.py "https://www.youtube.com/watch?v=..."
+
+# From a local file
+python3 generate_audiobook.py my_audiobook.mp3
+
+# Advanced options
+python3 generate_audiobook.py "https://www.youtube.com/playlist?list=..." \
+  --out "./library" \
+  --min-chapter-len 600 \
+  --transcription \
+  --whisper-model small \
+  --cookies-from-browser chrome
+```
+
+### Options
+
+| Flag | Description |
+|------|-------------|
+| `input` | YouTube URL or path to local MP3 file. |
+| `--out` | Output path or directory. |
+| `--transcription` | Enable Whisper AI chapter detection. |
+| `--whisper-model` | Model size: `tiny`, `base`, `small`, `medium`, `large` (default: `tiny`). |
+| `--silence-db` | Silence threshold in dB (default: `-35`). |
+| `--min-chapter-len` | Merge chapters shorter than N seconds. |
+| `--cookies-from-browser` | Use cookies from a browser (e.g., `chrome`, `firefox`). |
