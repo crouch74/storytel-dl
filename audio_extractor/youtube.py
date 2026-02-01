@@ -11,7 +11,7 @@ from .chapters import clean_chapter_titles
 
 logger = logging.getLogger(__name__)
 
-def download_youtube_audio(url: str, output_dir: str = ".", cookies_from_browser: Optional[str] = None, cookies_file: Optional[str] = None, list_formats: bool = False) -> Optional[Tuple[str, List[Dict[str, Any]], str, str]]:
+def download_youtube_audio(url: str, output_dir: str = ".", cookies_from_browser: Optional[str] = None, cookies_file: Optional[str] = None, list_formats: bool = False) -> Optional[Tuple[str, List[Dict[str, Any]], str, str, Optional[str]]]:
     """Downloads audio from YouTube (single video or playlist) and extracts chapters"""
     # Sanitize URL: remove backslashes that might come from shell escaping (e.g. \?, \&)
     url = url.replace("\\?", "?").replace("\\&", "&").replace("\\=", "=")
@@ -100,10 +100,15 @@ def download_youtube_audio(url: str, output_dir: str = ".", cookies_from_browser
     is_playlist = info.get("_type") == "playlist"
     entries = info.get("entries", [info]) if is_playlist else [info]
     
+    # Store original index to match filenames later, regardless of reordering
+    for i, e in enumerate(entries):
+        if e: # entries can contain Nones for deleted videos
+            e['_original_index'] = i + 1
+    
     playlist_items_str = ""
     if is_playlist:
         print(f"\n📋 Playlist found: {info.get('title', 'Unknown')}")
-        print(f"Found {len(entries)} videos. Select videos to EXCLUDE.")
+        print(f"Found {len(entries)} videos.")
         print("-" * 60)
         for i, entry in enumerate(entries):
             if not entry:
@@ -115,29 +120,45 @@ def download_youtube_audio(url: str, output_dir: str = ".", cookies_from_browser
             print(f"{i+1:3d}. [{dur_str}] {title}")
         print("-" * 60)
         
-        exclude_input = input("Enter indices to SKIP (comma-separated, e.g. 1,3,5) or Enter to download all: ").strip()
+        print("OPTIONS:")
+        print(" - Press Enter to download ALL in original order.")
+        print(" - Enter specific indices to keep (e.g. '1,3,5').")
+        print(" - Enter indices in ANY ORDER to rearrange (e.g. '3,1,2').")
         
-        if exclude_input:
+        selection_input = input("👉 Selection: ").strip()
+        
+        if selection_input:
             try:
-                excluded_indices = {int(x.strip()) for x in exclude_input.split(",") if x.strip().isdigit()}
-                kept_indices = []
-                kept_entries = []
+                # Parse indices
+                selected_indices = [int(x.strip()) for x in selection_input.split(",") if x.strip().isdigit()]
                 
-                for i, entry in enumerate(entries):
-                    idx = i + 1
-                    if idx not in excluded_indices:
-                        kept_indices.append(str(idx))
-                        kept_entries.append(entry)
-                    else:
-                        print(f"   Skipping: {entry.get('title', 'Unknown')}")
-                
-                if not kept_indices:
-                    logger.error("❌ All videos excluded!")
-                    return None
+                if not selected_indices:
+                    logger.warning("⚠️ No valid indices found. Downloading all.")
+                else:
+                    reordered_entries = []
+                    # Validate indices
+                    valid_indices = []
+                    for idx in selected_indices:
+                        if 1 <= idx <= len(entries):
+                            reordered_entries.append(entries[idx-1])
+                            valid_indices.append(str(idx))
+                        else:
+                            logger.warning(f"⚠️ Index {idx} out of bounds, skipping.")
                     
-                playlist_items_str = ",".join(kept_indices)
-                entries = kept_entries
-                logger.info(f"✅ Filtered to {len(entries)} videos.")
+                    if not reordered_entries:
+                        logger.error("❌ No valid videos selected!")
+                        return None
+                    
+                    # We need to tell yt-dlp which items to download. 
+                    # Order in --playlist-items doesn't strictly dictate download order, 
+                    # but we handle the final merge order manually in Python.
+                    # We just need to ensure the unique set of files is downloaded.
+                    unique_indices = sorted(list(set(valid_indices)))
+                    playlist_items_str = ",".join(unique_indices)
+                    
+                    entries = reordered_entries
+                    logger.info(f"✅ Selected {len(entries)} videos in custom order.")
+                    
             except ValueError:
                 logger.warning("⚠️ Invalid input. Downloading all.")
     playlist_title = info.get("title", "YouTube Audio")
@@ -152,7 +173,14 @@ def download_youtube_audio(url: str, output_dir: str = ".", cookies_from_browser
     
     # Check if combined file already exists in output_dir
     safe_title = "".join([c if c.isalnum() else "_" for c in playlist_title])
-    final_path = os.path.join(output_dir, f"{safe_title}.mp3")
+    
+    # Calculate order hash to ensure we don't reuse cached files with different video order
+    # This is critical if the user reorders the playlist
+    id_list = [e.get('id', 'unknown') for e in entries]
+    import hashlib
+    order_hash = hashlib.md5(",".join(id_list).encode()).hexdigest()[:8]
+    
+    final_path = os.path.join(output_dir, f"{safe_title}_{order_hash}.mp3")
     
     if os.path.exists(final_path):
         logger.info(f"♻️  File already exists, skipping download: {final_path}")
@@ -177,7 +205,37 @@ def download_youtube_audio(url: str, output_dir: str = ".", cookies_from_browser
                         "title": c.get("title", f"Chapter {len(all_chapters) + 1}")
                     })
             current_offset += duration
-        return final_path, all_chapters, playlist_title, uploader
+            
+        # Check for any likely cover
+        found_covers = glob.glob(os.path.join(output_dir, "*.jpg"))
+        cover_path = found_covers[0] if found_covers else None
+        
+        # If no cover found, try to fetch just the thumbnail
+        if not cover_path:
+            logger.info("🖼️  Audio exists but cover missing. Fetching thumbnail...")
+            cover_temp = os.path.join(output_dir, f"cover_{session_id}")
+            cmd_cover = yt_dlp_cmd + [
+                "--write-thumbnail", "--skip-download", "--convert-thumbnails", "jpg",
+                "--playlist-items", "1",
+                "-o", cover_temp,
+                url
+            ]
+            if cookies_from_browser:
+                cmd_cover += ["--cookies-from-browser", cookies_from_browser]
+            if cookies_file:
+                cmd_cover += ["--cookies", cookies_file]
+                
+            run_command(cmd_cover)
+            
+            # Check for result (yt-dlp appends extension)
+            possible_covers = glob.glob(f"{cover_temp}.*")
+            if possible_covers:
+                cover_path = possible_covers[0]
+                logger.info(f"✅ Downloaded cover: {cover_path}")
+            else:
+                logger.warning("⚠️ Failed to download cover.")
+                
+        return final_path, all_chapters, playlist_title, uploader, cover_path
 
     # 2. Download audio with session-specific filenames
     logger.info(f"📡 Downloading {'playlist' if is_playlist else 'audio'} ({len(entries)} items)...")
@@ -197,6 +255,7 @@ def download_youtube_audio(url: str, output_dir: str = ".", cookies_from_browser
         "--js-runtimes", "node",
         "--remote-components", "ejs:github",
         "--extractor-args", "youtube:player_client=web,tv",
+        "--write-thumbnail", "--convert-thumbnails", "jpg"
     ]
     
     if is_playlist and playlist_items_str:
@@ -217,11 +276,34 @@ def download_youtube_audio(url: str, output_dir: str = ".", cookies_from_browser
 
     # 3. Process downloads and merge - use session-specific pattern
     downloaded_files = []
+    cover_path = None
+    
     if is_playlist:
-        # Only find files from this session
-        downloaded_files = sorted(glob.glob(os.path.join(output_dir, f"yt_part_{session_id}_*.mp3")))
+        # Resolve filenames based on the reordered entries
+        # We look for files matching the ORIGINAL index of each entry
+        for entry in entries:
+            orig_idx = entry.get('_original_index')
+            if orig_idx:
+                # Find file matching: yt_part_{session_id}_{orig_idx:03d}_*.mp3
+                pattern = os.path.join(output_dir, f"yt_part_{session_id}_{orig_idx:03d}_*.mp3")
+                matches = glob.glob(pattern)
+                if matches:
+                    downloaded_files.append(matches[0])
+                else:
+                    logger.warning(f"⚠️ Missing file for entry {orig_idx}: {entry.get('title')}")
+            else:
+                 # Single video case or missing index logic (fallback)
+                 pass
+
+        # Try to find any cover from this session
+        covers = glob.glob(os.path.join(output_dir, f"yt_part_{session_id}_*.jpg"))
+        if covers:
+            cover_path = covers[0]
     else:
         downloaded_files = glob.glob(os.path.join(output_dir, f"yt_download_{session_id}_*.mp3"))
+        covers = glob.glob(os.path.join(output_dir, f"yt_download_{session_id}_*.jpg"))
+        if covers:
+             cover_path = covers[0]
 
     if not downloaded_files:
         logger.error("❌ Could not find downloaded audio files.")
@@ -233,7 +315,9 @@ def download_youtube_audio(url: str, output_dir: str = ".", cookies_from_browser
     # Process each downloaded file to build chapters
     for i, file_path in enumerate(downloaded_files):
         duration = get_audio_duration(file_path)
-        entry = entries[i] if (is_playlist and i < len(entries)) else info
+        # Use the ordered entry corresponding to this file
+        entry = entries[i] if (i < len(entries)) else info
+        
         yt_chapters = entry.get("chapters") or []
         
         if not yt_chapters:
@@ -260,7 +344,7 @@ def download_youtube_audio(url: str, output_dir: str = ".", cookies_from_browser
         if is_playlist and len(all_chapters) > 1:
             all_chapters = clean_chapter_titles(all_chapters)
             
-        return final_path, all_chapters, playlist_title, uploader
+        return final_path, all_chapters, playlist_title, uploader, cover_path
     else:
         logger.error("❌ Failed to concatenate audio files.")
-        return (downloaded_files[0] if downloaded_files else None), all_chapters, playlist_title, uploader
+        return (downloaded_files[0] if downloaded_files else None), all_chapters, playlist_title, uploader, cover_path

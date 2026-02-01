@@ -5,8 +5,8 @@ from .utils import run_command
 
 logger = logging.getLogger(__name__)
 
-def create_m4b(input_path: str, output_path: str, chapters: List[Dict[str, Any]], title: Optional[str] = None, author: Optional[str] = None):
-    """Creates M4B file with embedded metadata and chapters"""
+def create_m4b(input_path: str, output_path: str, chapters: List[Dict[str, Any]], title: Optional[str] = None, author: Optional[str] = None, cover_path: Optional[str] = None, normalize: bool = False):
+    """Creates M4B file with embedded metadata, chapters and cover image"""
     meta_file = f"{input_path}.metadata"
     
     # Ensure output directory exists
@@ -33,16 +33,46 @@ def create_m4b(input_path: str, output_path: str, chapters: List[Dict[str, Any]]
                 f.write(f"END={int(c['end'] * 1000)}\n")
                 f.write(f"title={c['title']}\n")
         
-        # ffmpeg -i input -i metadata -map_metadata 1 -c:a aac -b:a 64k output.m4b
+        # Build command
+        # default: ffmpeg -i input -i metadata ...
         cmd = [
             "ffmpeg", "-y",
             "-i", input_path,
-            "-i", meta_file,
-            "-map_metadata", "1",
+            "-i", meta_file
+        ]
+        
+        # Add cover if exists
+        map_args = ["-map_metadata", "1"]
+        
+        # Base audio mapping (file 0)
+        
+        if cover_path and os.path.exists(cover_path):
+            logger.info(f"🖼️  Embedding cover: {cover_path}")
+            cmd.extend(["-i", cover_path])
+            # Map audio from 0, video (cover) from 2
+            map_args.extend(["-map", "0:a", "-map", "2:v"])
+            map_args.extend(["-disposition:v", "attached_pic"])
+            # Ensure it's jpg/png compatible
+            map_args.extend(["-c:v", "mjpeg"]) 
+        else:
+             map_args.extend(["-map", "0:a"])
+
+        cmd.extend(map_args)
+        
+        # Audio filters
+        audio_filters = []
+        if normalize:
+            logger.info("🔊 Normalizing audio to -16 LUFS...")
+            audio_filters.append("loudnorm=I=-16:TP=-1.5:LRA=11")
+            
+        if audio_filters:
+            cmd.extend(["-af", ",".join(audio_filters)])
+        
+        cmd.extend([
             "-c:a", "aac", "-b:a", "128k", # Good quality
             "-f", "mp4",
             output_path
-        ]
+        ])
         
         logger.info(f"🎬 Creating M4B: {output_path}...")
         res = run_command(cmd)
